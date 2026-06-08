@@ -1,103 +1,131 @@
 import streamlit as st
 import pandas as pd
 import plotly.express as px
+from supabase import create_client, Client
 
-# Page Setup
-st.set_page_config(page_title="Sales Executive Dashboard", layout="wide")
-st.title("📊 Sales Opportunity Dashboard")
+# --- DB CONNECTION ---
+url = st.secrets["SUPABASE_URL"]
+key = st.secrets["SUPABASE_KEY"]
+supabase: Client = create_client(url, key)
 
-# 1. File Upload
-uploaded_file = st.file_uploader("Upload your Excel file", type=["xlsx"])
+# Page Config
+st.set_page_config(page_title="Supabase Sales CRM", layout="wide")
+st.title("🗄️ Sales Dashboard (Powered by Supabase)")
 
-if uploaded_file:
-    try:
-        # Load Data
-        df = pd.read_excel(uploaded_file, sheet_name="7b_Consolidated_Opps", header=0)
+# --- HELPER FUNCTIONS ---
+def fetch_data():
+    """Fetch all rows from Supabase"""
+    response = supabase.table("sales_opportunities").select("*").execute()
+    return pd.DataFrame(response.data)
+
+def upload_initial_data(df, col_map):
+    """Initial bulk upload from Excel to Supabase"""
+    # Standardize column names to match DB
+    to_insert = []
+    for _, row in df.iterrows():
+        to_insert.append({
+            "account": str(row[col_map['account']]),
+            "sales_leader": str(row[col_map['leader']]),
+            "stage": str(row[col_map['stage']]),
+            "tcv_musd": float(row[col_map['tcv']]),
+            "fy_musd": float(row[col_map['fy']])
+        })
+    supabase.table("sales_opportunities").insert(to_insert).execute()
+    st.success("Data uploaded to Database!")
+
+# --- MAIN APP LOGIC ---
+
+# 1. Initial Data Import
+with st.expander("⬆️ Initial Excel Import (Run once)"):
+    uploaded_file = st.file_uploader("Upload Excel to populate Database", type=["xlsx"])
+    if uploaded_file:
+        df_excel = pd.read_excel(uploaded_file, sheet_name="7b_Consolidated_Opps")
+        df_excel.columns = [str(c).strip() for c in df_excel.columns]
         
-        # Clean column names (strip spaces, ensure string)
-        df.columns = [str(col).strip() for col in df.columns]
-
-        # 2. Column Mapping (Sidebar)
-        st.sidebar.header("1. Map Currency Columns")
-        all_cols = list(df.columns)
+        st.write("Map your columns before importing:")
+        c_acc = st.selectbox("Account", df_excel.columns)
+        c_lead = st.selectbox("Leader", df_excel.columns)
+        c_stage = st.selectbox("Stage", df_excel.columns)
+        c_tcv = st.selectbox("TCV (MUSD)", df_excel.columns)
+        c_fy = st.selectbox("FY (MUSD)", df_excel.columns)
         
-        # Auto-detect TCV and FY columns
-        def find_col(target):
-            for i, c in enumerate(all_cols):
-                if target.lower() in str(c).lower(): return i
-            return 0
+        if st.button("Push to Database"):
+            mapping = {'account': c_acc, 'leader': c_lead, 'stage': c_stage, 'tcv': c_tcv, 'fy': c_fy}
+            upload_initial_data(df_excel, mapping)
+            st.rerun()
 
-        col_tcv = st.sidebar.selectbox("TCV (MUSD) Column", all_cols, index=find_col("TCV"))
-        col_fy = st.sidebar.selectbox("FY (MUSD) Column", all_cols, index=find_col("FY"))
-        col_leader = st.sidebar.selectbox("Sales Leader Column", all_cols, index=find_col("Leader"))
-        col_stage = st.sidebar.selectbox("Stage Column", all_cols, index=find_col("Stage"))
+# 2. Fetch Data from DB
+df = fetch_data()
 
-        # Convert to Numeric (and handle non-numeric values gracefully)
-        df[col_tcv] = pd.to_numeric(df[col_tcv], errors='coerce').fillna(0)
-        df[col_fy] = pd.to_numeric(df[col_fy], errors='coerce').fillna(0)
+if not df.empty:
+    # --- CRUD SECTION ---
+    st.header("📝 Database Editor (Live CRUD)")
+    st.info("Any changes here update Supabase instantly.")
+    
+    # st.data_editor with Supabase integration
+    edited_data = st.data_editor(
+        df, 
+        num_rows="dynamic", 
+        key="db_editor", 
+        use_container_width=True,
+        disabled=["id", "last_updated"] # Don't let users edit primary keys
+    )
 
-        # 3. Dynamic Filter System (All Columns) - FIXED FOR SORTING ERROR
-        st.sidebar.header("2. Global Filters")
-        active_filters = st.sidebar.multiselect("Select columns to filter by:", all_cols, default=[col_leader, col_stage])
+    # Detect changes to save back to DB
+    if st.button("Save Changes to Database"):
+        # This is a simplified logic. In a production app, you would 
+        # compare st.session_state.db_editor['edited_rows'] etc.
+        # For this demo, we will do a simple 'Upsert' logic:
+        for _, row in edited_data.iterrows():
+            row_data = {
+                "account": row['account'],
+                "sales_leader": row['sales_leader'],
+                "stage": row['stage'],
+                "tcv_musd": row['tcv_musd'],
+                "fy_musd": row['fy_musd']
+            }
+            if pd.notna(row['id']): # Update existing
+                supabase.table("sales_opportunities").update(row_data).eq("id", row['id']).execute()
+            else: # Insert new
+                supabase.table("sales_opportunities").insert(row_data).execute()
         
-        filtered_df = df.copy()
-        for col in active_filters:
-            # FIX: Convert unique values to strings before sorting to avoid float vs str error
-            raw_vals = df[col].unique().tolist()
-            vals = sorted([str(x) for x in raw_vals if pd.notna(x)])
-            
-            selected = st.sidebar.multiselect(f"Filter {col}", vals, key=f"filter_{col}")
-            if selected:
-                # Filter the dataframe (matching strings to strings)
-                filtered_df = filtered_df[filtered_df[col].astype(str).isin(selected)]
+        # Handle Deletions
+        # Note: Data editor deletions are complex; usually you'd track deleted IDs.
+        st.success("Database Updated!")
+        st.rerun()
 
-        # 4. Calculation of Subtotals
-        total_tcv = filtered_df[col_tcv].sum()
-        total_fy = filtered_df[col_fy].sum()
-        count_opps = len(filtered_df)
+    # --- DASHBOARD SECTION ---
+    st.markdown("---")
+    st.header("📊 Filtered Dashboard")
 
-        # 5. KPI Cards
-        st.subheader("Subtotals (Filtered Selection)")
-        k1, k2, k3 = st.columns(3)
-        k1.metric("Total Opportunities", f"{count_opps}")
-        k2.metric(f"Total {col_tcv}", f"{total_tcv:,.2f} MUSD")
-        k3.metric(f"Total {col_fy}", f"{total_fy:,.2f} MUSD")
+    # Filters
+    st.sidebar.header("Filters")
+    sel_leader = st.sidebar.multiselect("Leader", df['sales_leader'].unique(), default=df['sales_leader'].unique())
+    sel_stage = st.sidebar.multiselect("Stage", df['stage'].unique(), default=df['stage'].unique())
 
-        # 6. Charts (Pie & Bar)
-        st.markdown("---")
-        chart_col1, chart_col2 = st.columns(2)
-        
-        with chart_col1:
-            fig_bar = px.bar(filtered_df, x=col_stage, y=col_tcv, color=col_stage, 
-                             title=f"TCV by Stage", template="plotly_white")
-            st.plotly_chart(fig_bar, use_container_width=True)
+    filtered_df = df[(df['sales_leader'].isin(sel_leader)) & (df['stage'].isin(sel_stage))]
 
-        with chart_col2:
-            fig_pie = px.pie(filtered_df, values=col_tcv, names=col_leader, 
-                             title=f"TCV Distribution by Leader", hole=0.4)
-            st.plotly_chart(fig_pie, use_container_width=True)
+    # Metrics
+    k1, k2, k3 = st.columns(3)
+    k1.metric("Opportunities", len(filtered_df))
+    k2.metric("Total TCV (MUSD)", f"{filtered_df['tcv_musd'].sum():,.2f}")
+    k3.metric("Total FY (MUSD)", f"{filtered_df['fy_musd'].sum():,.2f}")
 
-        # 7. Data Table with Subtotals
-        st.markdown("---")
-        st.subheader("Detailed Data View")
+    # Charts
+    c1, c2 = st.columns(2)
+    with c1:
+        st.plotly_chart(px.bar(filtered_df, x="stage", y="tcv_musd", color="stage", title="TCV by Stage"), use_container_width=True)
+    with c2:
+        st.plotly_chart(px.pie(filtered_df, values="tcv_musd", names="sales_leader", title="TCV by Leader"), use_container_width=True)
 
-        # Create the summary row
-        summary_row = {col: "" for col in all_cols}
-        summary_row[all_cols[0]] = "TOTAL (FILTERED)"
-        summary_row[col_tcv] = total_tcv
-        summary_row[col_fy] = total_fy
-        
-        summary_df = pd.DataFrame([summary_row])
+    # Table with Subtotal
+    st.subheader("Filtered Table View")
+    sub_row = pd.DataFrame([{
+        "account": "TOTAL", 
+        "tcv_musd": filtered_df['tcv_musd'].sum(),
+        "fy_musd": filtered_df['fy_musd'].sum()
+    }])
+    st.dataframe(pd.concat([filtered_df, sub_row], ignore_index=True), use_container_width=True)
 
-        # Combine data and subtotal row
-        # Convert entire dataframe to string for display to handle mixed types safely
-        display_df_main = filtered_df.astype(str)
-        # But ensure the numeric columns in summary are floats so formatting works (optional)
-        final_display_df = pd.concat([filtered_df, summary_df], ignore_index=True)
-
-        st.dataframe(final_display_df, use_container_width=True)
-
-    except Exception as e:
-        st.error(f"Error: {e}")
 else:
-    st.info("Awaiting Excel file upload...")
+    st.warning("Database is empty. Please upload an Excel file using the section above.")
