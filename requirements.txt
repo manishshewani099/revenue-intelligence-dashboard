@@ -6,4 +6,7 @@ numpy
 google-generativeai
 sqlalchemy
 reportlab
+Install:
+pip install -r requirements.txt
+
 
