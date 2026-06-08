@@ -1,91 +1,100 @@
-<> Python
 import streamlit as st
 import pandas as pd
 import plotly.express as px
 
-# Set page configuration
-st.set_page_config(page_title="Sales Opportunity Dashboard", layout="wide")
+st.set_page_config(page_title="Sales Dashboard", layout="wide")
 
-st.title("📊 Sales Opportunity Dashboard")
+st.title("📊 Advanced Sales Opportunity Dashboard")
 
-# 1. Upload Excel file
 uploaded_file = st.file_uploader("Upload your Excel file", type=["xlsx"])
 
 if uploaded_file:
     try:
-        # 2. Read specific sheet
-        df = pd.read_excel(uploaded_file, sheet_name="7b_Consolidated_Opps")
-
-        # Basic Data Cleaning: Ensure numeric types for calculations
-        # Adjust column names if they have leading/trailing spaces in your file
-        df.columns = df.columns.str.strip()
+        # 1. Load Data
+        df = pd.read_excel(uploaded_file, sheet_name="7b_Consolidated_Opps", header=0)
         
-        # Ensure Probability and TCV are numeric
-        if 'TCV' in df.columns:
-            df['TCV'] = pd.to_numeric(df['TCV'], errors='coerce').fillna(0)
-        if 'Probability' in df.columns:
-            df['Probability'] = pd.to_numeric(df['Probability'], errors='coerce').fillna(0)
+        # Clean column names (strip spaces, ensure string)
+        df.columns = [str(col).strip() for col in df.columns]
 
-        # 5. Add sidebar filters
-        st.sidebar.header("Filters")
+        # 2. Identify the specific MUSD columns
+        # We search for columns containing "FY" and "TCV" to map them automatically
+        all_cols = list(df.columns)
         
-        sales_leader = st.sidebar.multiselect(
-            "Select Sales Leader",
-            options=df["Sales Leader"].unique(),
-            default=df["Sales Leader"].unique()
-        )
+        def find_col(target_snippets):
+            for col in all_cols:
+                if any(snippet.lower() in col.lower() for snippet in target_snippets):
+                    return col
+            return all_cols[0]
 
-        stage = st.sidebar.multiselect(
-            "Select Stage",
-            options=df["Stage"].unique(),
-            default=df["Stage"].unique()
-        )
+        col_fy = st.sidebar.selectbox("Identify FY (MUSD) column", all_cols, index=all_cols.index(find_col(["FY", "MUSD"])))
+        col_tcv = st.sidebar.selectbox("Identify TCV (MUSD) column", all_cols, index=all_cols.index(find_col(["TCV", "MUSD"])))
 
-        account = st.sidebar.multiselect(
-            "Select Account",
-            options=df["Account"].unique(),
-            default=df["Account"].unique()
-        )
+        # Convert to numeric (Safety)
+        df[col_fy] = pd.to_numeric(df[col_fy], errors='coerce').fillna(0)
+        df[col_tcv] = pd.to_numeric(df[col_tcv], errors='coerce').fillna(0)
 
-        # 6. Update dashboard dynamically based on filters
-        filtered_df = df[
-            (df["Sales Leader"].isin(sales_leader)) &
-            (df["Stage"].isin(stage)) &
-            (df["Account"].isin(account))
-        ]
-
-        # 4. Show Metrics
-        col1, col2, col3 = st.columns(3)
+        # 3. DYNAMIC FILTERING ON ALL COLUMNS
+        st.sidebar.header("Filter Data")
         
-        total_opps = len(filtered_df)
-        total_tcv = filtered_df["TCV"].sum()
-        avg_prob = filtered_df["Probability"].mean() if not filtered_df.empty else 0
+        # Allow users to select which columns they want to filter by
+        filter_cols = st.sidebar.multiselect("Add filters for specific columns:", all_cols, default=all_cols[:3])
 
-        col1.metric("Total Opportunities", f"{total_opps:,}")
-        col2.metric("Total TCV", f"${total_tcv:,.2f}")
-        col3.metric("Average Probability", f"{avg_prob:.1f}%")
+        filtered_df = df.copy()
 
-        # Visualizations (Using Plotly)
+        # Generate filter UI for each selected column
+        for col in filter_cols:
+            unique_vals = df[col].unique().tolist()
+            selected = st.sidebar.multiselect(f"Filter {col}", options=unique_vals, key=col)
+            if selected:
+                filtered_df = filtered_df[filtered_df[col].isin(selected)]
+
+        # 4. CALCULATE DYNAMIC SUBTOTALS
+        total_fy_musd = filtered_df[col_fy].sum()
+        total_tcv_musd = filtered_df[col_tcv].sum()
+        count_opps = len(filtered_df)
+
+        # 5. KPI CARDS
+        st.subheader("Subtotals (Filtered Selection)")
+        k1, k2, k3 = st.columns(3)
+        
+        k1.metric("Total Opportunities", f"{count_opps}")
+        k2.metric(f"Total {col_fy}", f"{total_fy_musd:,.2f} MUSD")
+        k3.metric(f"Total {col_tcv}", f"{total_tcv_musd:,.2f} MUSD")
+
+        # 6. GRAPHS (Optional Toggle)
+        st.sidebar.markdown("---")
+        if st.sidebar.checkbox("Show Visualizations", value=True):
+            st.markdown("---")
+            c1, c2 = st.columns(2)
+            with c1:
+                # Use the first available column for chart axis if Stage isn't found
+                chart_axis = find_col(["Stage", "Status", "Leader"])
+                fig1 = px.bar(filtered_df, x=chart_axis, y=col_tcv, title=f"{col_tcv} by {chart_axis}")
+                st.plotly_chart(fig1, use_container_width=True)
+            with c2:
+                fig2 = px.histogram(filtered_df, x=col_fy, title=f"Distribution of {col_fy}")
+                st.plotly_chart(fig2, use_container_width=True)
+
+        # 7. DATA TABLE WITH TOTAL ROW
         st.markdown("---")
-        chart_col1, chart_col2 = st.columns(2)
-
-        with chart_col1:
-            st.subheader("TCV by Stage")
-            fig_stage = px.bar(filtered_df, x="Stage", y="TCV", color="Stage", 
-                               title="Total TCV per Stage")
-            st.plotly_chart(fig_stage, use_container_width=True)
-
-        with chart_col2:
-            st.subheader("TCV by Sales Leader")
-            fig_leader = px.pie(filtered_df, values="TCV", names="Sales Leader", 
-                                title="TCV Distribution by Leader")
-            st.plotly_chart(fig_leader, use_container_width=True)
-
-        # 3. Display dataframe
         st.subheader("Detailed Data View")
-        st.dataframe(filtered_df, use_container_width=True)
+
+        # Create a summary row for the table
+        summary_data = {col: "" for col in all_cols}
+        summary_data[all_cols[0]] = "SUBTOTAL"
+        summary_data[col_fy] = total_fy_musd
+        summary_data[col_tcv] = total_tcv_musd
+        
+        summary_df = pd.DataFrame([summary_data])
+
+        # Combine actual data + summary row
+        # (Using .astype(str) for the first column to avoid mixing types)
+        final_display_df = pd.concat([filtered_df, summary_df], ignore_index=True)
+
+        # Styling to highlight the last row
+        st.dataframe(final_display_df, use_container_width=True)
 
     except Exception as e:
-        st.error(f"Error: Could not find sheet '7b_Consolidated_Opps' or file is malformed. {e}")
+        st.error(f"Error processing file: {e}")
 else:
-    st.info("Please upload an Excel file to get started.")
+    st.info("Please upload your Excel file to start.")
