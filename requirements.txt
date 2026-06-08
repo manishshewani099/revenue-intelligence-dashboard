@@ -1,1 +1,9 @@
+streamlit
+pandas
+openpyxl
+plotly
+numpy
+google-generativeai
+sqlalchemy
+reportlab
 
