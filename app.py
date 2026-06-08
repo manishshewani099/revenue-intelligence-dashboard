@@ -2,99 +2,102 @@ import streamlit as st
 import pandas as pd
 import plotly.express as px
 
-st.set_page_config(page_title="Sales Dashboard", layout="wide")
+# Page Setup
+st.set_page_config(page_title="Sales Executive Dashboard", layout="wide")
+st.title("📊 Sales Opportunity Dashboard")
 
-st.title("📊 Advanced Sales Opportunity Dashboard")
-
+# 1. File Upload
 uploaded_file = st.file_uploader("Upload your Excel file", type=["xlsx"])
 
 if uploaded_file:
     try:
-        # 1. Load Data
+        # Load Data
         df = pd.read_excel(uploaded_file, sheet_name="7b_Consolidated_Opps", header=0)
         
         # Clean column names (strip spaces, ensure string)
         df.columns = [str(col).strip() for col in df.columns]
 
-        # 2. Identify the specific MUSD columns
-        # We search for columns containing "FY" and "TCV" to map them automatically
+        # 2. Column Mapping (Sidebar)
+        st.sidebar.header("1. Map Currency Columns")
         all_cols = list(df.columns)
         
-        def find_col(target_snippets):
-            for col in all_cols:
-                if any(snippet.lower() in col.lower() for snippet in target_snippets):
-                    return col
-            return all_cols[0]
+        # Auto-detect TCV and FY columns
+        def find_col(target):
+            for i, c in enumerate(all_cols):
+                if target.lower() in str(c).lower(): return i
+            return 0
 
-        col_fy = st.sidebar.selectbox("Identify FY (MUSD) column", all_cols, index=all_cols.index(find_col(["FY", "MUSD"])))
-        col_tcv = st.sidebar.selectbox("Identify TCV (MUSD) column", all_cols, index=all_cols.index(find_col(["TCV", "MUSD"])))
+        col_tcv = st.sidebar.selectbox("TCV (MUSD) Column", all_cols, index=find_col("TCV"))
+        col_fy = st.sidebar.selectbox("FY (MUSD) Column", all_cols, index=find_col("FY"))
+        col_leader = st.sidebar.selectbox("Sales Leader Column", all_cols, index=find_col("Leader"))
+        col_stage = st.sidebar.selectbox("Stage Column", all_cols, index=find_col("Stage"))
 
-        # Convert to numeric (Safety)
-        df[col_fy] = pd.to_numeric(df[col_fy], errors='coerce').fillna(0)
+        # Convert to Numeric (and handle non-numeric values gracefully)
         df[col_tcv] = pd.to_numeric(df[col_tcv], errors='coerce').fillna(0)
+        df[col_fy] = pd.to_numeric(df[col_fy], errors='coerce').fillna(0)
 
-        # 3. DYNAMIC FILTERING ON ALL COLUMNS
-        st.sidebar.header("Filter Data")
+        # 3. Dynamic Filter System (All Columns) - FIXED FOR SORTING ERROR
+        st.sidebar.header("2. Global Filters")
+        active_filters = st.sidebar.multiselect("Select columns to filter by:", all_cols, default=[col_leader, col_stage])
         
-        # Allow users to select which columns they want to filter by
-        filter_cols = st.sidebar.multiselect("Add filters for specific columns:", all_cols, default=all_cols[:3])
-
         filtered_df = df.copy()
-
-        # Generate filter UI for each selected column
-        for col in filter_cols:
-            unique_vals = df[col].unique().tolist()
-            selected = st.sidebar.multiselect(f"Filter {col}", options=unique_vals, key=col)
+        for col in active_filters:
+            # FIX: Convert unique values to strings before sorting to avoid float vs str error
+            raw_vals = df[col].unique().tolist()
+            vals = sorted([str(x) for x in raw_vals if pd.notna(x)])
+            
+            selected = st.sidebar.multiselect(f"Filter {col}", vals, key=f"filter_{col}")
             if selected:
-                filtered_df = filtered_df[filtered_df[col].isin(selected)]
+                # Filter the dataframe (matching strings to strings)
+                filtered_df = filtered_df[filtered_df[col].astype(str).isin(selected)]
 
-        # 4. CALCULATE DYNAMIC SUBTOTALS
-        total_fy_musd = filtered_df[col_fy].sum()
-        total_tcv_musd = filtered_df[col_tcv].sum()
+        # 4. Calculation of Subtotals
+        total_tcv = filtered_df[col_tcv].sum()
+        total_fy = filtered_df[col_fy].sum()
         count_opps = len(filtered_df)
 
-        # 5. KPI CARDS
+        # 5. KPI Cards
         st.subheader("Subtotals (Filtered Selection)")
         k1, k2, k3 = st.columns(3)
-        
         k1.metric("Total Opportunities", f"{count_opps}")
-        k2.metric(f"Total {col_fy}", f"{total_fy_musd:,.2f} MUSD")
-        k3.metric(f"Total {col_tcv}", f"{total_tcv_musd:,.2f} MUSD")
+        k2.metric(f"Total {col_tcv}", f"{total_tcv:,.2f} MUSD")
+        k3.metric(f"Total {col_fy}", f"{total_fy:,.2f} MUSD")
 
-        # 6. GRAPHS (Optional Toggle)
-        st.sidebar.markdown("---")
-        if st.sidebar.checkbox("Show Visualizations", value=True):
-            st.markdown("---")
-            c1, c2 = st.columns(2)
-            with c1:
-                # Use the first available column for chart axis if Stage isn't found
-                chart_axis = find_col(["Stage", "Status", "Leader"])
-                fig1 = px.bar(filtered_df, x=chart_axis, y=col_tcv, title=f"{col_tcv} by {chart_axis}")
-                st.plotly_chart(fig1, use_container_width=True)
-            with c2:
-                fig2 = px.histogram(filtered_df, x=col_fy, title=f"Distribution of {col_fy}")
-                st.plotly_chart(fig2, use_container_width=True)
+        # 6. Charts (Pie & Bar)
+        st.markdown("---")
+        chart_col1, chart_col2 = st.columns(2)
+        
+        with chart_col1:
+            fig_bar = px.bar(filtered_df, x=col_stage, y=col_tcv, color=col_stage, 
+                             title=f"TCV by Stage", template="plotly_white")
+            st.plotly_chart(fig_bar, use_container_width=True)
 
-        # 7. DATA TABLE WITH TOTAL ROW
+        with chart_col2:
+            fig_pie = px.pie(filtered_df, values=col_tcv, names=col_leader, 
+                             title=f"TCV Distribution by Leader", hole=0.4)
+            st.plotly_chart(fig_pie, use_container_width=True)
+
+        # 7. Data Table with Subtotals
         st.markdown("---")
         st.subheader("Detailed Data View")
 
-        # Create a summary row for the table
-        summary_data = {col: "" for col in all_cols}
-        summary_data[all_cols[0]] = "SUBTOTAL"
-        summary_data[col_fy] = total_fy_musd
-        summary_data[col_tcv] = total_tcv_musd
+        # Create the summary row
+        summary_row = {col: "" for col in all_cols}
+        summary_row[all_cols[0]] = "TOTAL (FILTERED)"
+        summary_row[col_tcv] = total_tcv
+        summary_row[col_fy] = total_fy
         
-        summary_df = pd.DataFrame([summary_data])
+        summary_df = pd.DataFrame([summary_row])
 
-        # Combine actual data + summary row
-        # (Using .astype(str) for the first column to avoid mixing types)
+        # Combine data and subtotal row
+        # Convert entire dataframe to string for display to handle mixed types safely
+        display_df_main = filtered_df.astype(str)
+        # But ensure the numeric columns in summary are floats so formatting works (optional)
         final_display_df = pd.concat([filtered_df, summary_df], ignore_index=True)
 
-        # Styling to highlight the last row
         st.dataframe(final_display_df, use_container_width=True)
 
     except Exception as e:
-        st.error(f"Error processing file: {e}")
+        st.error(f"Error: {e}")
 else:
-    st.info("Please upload your Excel file to start.")
+    st.info("Awaiting Excel file upload...")
