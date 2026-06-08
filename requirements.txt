@@ -4,9 +4,7 @@ openpyxl
 plotly
 numpy
 google-generativeai
-sqlalchemy
+SQLAlchemy
 reportlab
-Install:
-pip install -r requirements.txt
-
+``
 
